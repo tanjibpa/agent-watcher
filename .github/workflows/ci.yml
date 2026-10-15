@@ -1,0 +1,30 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test native state and integrations
+        run: swift test
+      - name: Test macOS login-shell registration
+        run: python3 Tests/Integration/terminal.test.py .build/debug/agent-watcher-hook
+      - name: Test the Pi extension
+        run: node --experimental-strip-types --test Tests/Integration/pi.test.mjs
+      - name: Build the universal app
+        run: UNIVERSAL=1 bash scripts/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentWatcher-development
+          path: dist/AgentWatcher.zip
