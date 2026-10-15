@@ -31,7 +31,12 @@ public struct ProcessIdentity: Codable, Equatable, Sendable {
     let size = Int32(MemoryLayout<proc_bsdinfo>.size)
     guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
     var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-    guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return nil }
+    if proc_pidpath(pid, &path, UInt32(path.count)) <= 0 {
+      // Package upgrades can unlink an executable while its process is still running.
+      guard errno == ENOENT,
+        proc_regionfilename(pid, 0, &path, UInt32(path.count)) > 0
+      else { return nil }
+    }
     var ttyBuffer = [CChar](repeating: 0, count: 128)
     let ttyName = devname_r(
       Int32(bitPattern: info.e_tdev), S_IFCHR, &ttyBuffer, Int32(ttyBuffer.count))

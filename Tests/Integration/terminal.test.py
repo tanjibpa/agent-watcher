@@ -40,6 +40,26 @@ with tempfile.TemporaryDirectory(prefix="agent-watcher-terminal-") as directory:
         assert Path(agent["process"]["executable"]).resolve() == cli.resolve()
         print(f"PASS: {provider} registers through the privileged login process")
 
+        state = root / f"unlinked-{provider}"
+        result = subprocess.run(
+            [str(terminal), "terminal", str(cli), str(hook), provider],
+            env={**os.environ, "AGENT_WATCHER_DATA_DIR": str(state),
+                 "AGENT_WATCHER_TEST_UNLINK_EXECUTABLE": "1"},
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=root,
+        )
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        assert not cli.exists(), "fixture must remove only its own running executable"
+        snapshots = list((state / "sessions").glob("*.json"))
+        assert len(snapshots) == 1, f"{provider}: running CLI disappeared after its executable was removed"
+        agent = json.loads(snapshots[0].read_text())
+        assert agent["provider"] == provider
+        assert Path(agent["process"]["executable"]).resolve() == cli.resolve()
+        shutil.copy2(terminal, cli)
+        print(f"PASS: {provider} registers after a package upgrade removes its running executable")
+
     repository = Path(__file__).resolve().parents[2]
     probe = root / "discovery-probe"
     subprocess.run(

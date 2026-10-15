@@ -35,6 +35,9 @@ int main(int argc, char **argv) {
   if (getenv("AGENT_WATCHER_TEST_PIPE_INPUT")) {
     if (!freopen("/dev/null", "r", stdin)) return 7;
   }
+  if (getenv("AGENT_WATCHER_TEST_UNLINK_EXECUTABLE")) {
+    if (unlink(argv[2]) != 0) return 7;
+  }
   int input[2];
   if (pipe(input) != 0) return 7;
   pid_t child = fork();
