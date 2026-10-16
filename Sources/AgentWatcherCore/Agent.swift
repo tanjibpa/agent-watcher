@@ -161,7 +161,7 @@ public func snippet(_ value: String, limit: Int = 140) -> String {
 
 public struct AttentionState: Codable, Equatable, Sendable {
   public var readThrough: TimeInterval = 0
-  public var lastNotification: String?
+  public var notifiedToken: String?
 
   public init() {}
 
@@ -176,9 +176,13 @@ public struct AttentionState: Codable, Equatable, Sendable {
   public mutating func observe(_ agent: Agent, focused: Bool, notificationsEnabled: Bool) -> Bool {
     if focused, let completed = agent.completedAt { readThrough = max(readThrough, completed) }
     guard needsAttention(agent), let token = agent.attentionToken else { return false }
-    guard token != lastNotification else { return false }
-    // A prompt already seen in its pane must not notify when you switch away.
-    lastNotification = token
-    return !focused && notificationsEnabled
+    if focused {
+      // A prompt already seen in its pane must not notify when you switch away.
+      notifiedToken = token
+      return false
+    }
+    guard notificationsEnabled, token != notifiedToken else { return false }
+    notifiedToken = token
+    return true
   }
 }

@@ -95,6 +95,16 @@ private func event(
   #expect(!attention.needsAttention(agent))
 }
 
+@Test func disabledNotificationsDoNotConsumeAttention() {
+  var agent = Agent(process: process(), provider: .pi, sessionID: "session", cwd: "/src/project")
+  agent.apply(event(.inputStart))
+  var attention = AttentionState()
+  let blocked = attention.observe(agent, focused: false, notificationsEnabled: false)
+  let delivered = attention.observe(agent, focused: false, notificationsEnabled: true)
+  #expect(!blocked)
+  #expect(delivered)
+}
+
 @Test func onlyTheFocusedAgentIsAcknowledged() {
   var a = Agent(process: process(), provider: .pi, sessionID: "session", cwd: "/src/project")
   a.apply(event(.complete))

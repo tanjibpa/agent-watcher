@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
   private var ghosttyAuthorized = false
   private var cmuxAuthorized = false
   private var processWatchers: [String: any DispatchSourceProcess] = [:]
+  private var askedToNotify = false
 
   var attentionCount: Int { agents.filter { needsAttention($0) }.count }
   var anyIntegrationInstalled: Bool { installed.values.contains(true) }
@@ -276,6 +277,7 @@ final class AppModel: ObservableObject {
       ghosttyConnected = false
     }
     var cmuxSnapshot: CmuxSnapshot?
+    var pendingNotification = false
     if cmuxAuthorized, let executable = cmuxExecutable {
       do {
         // Check app focus after the CLI read so switching apps during it cannot acknowledge a response.
@@ -302,6 +304,9 @@ final class AppModel: ObservableObject {
           cmuxFrontmost && target != nil && target?.surfaceID == cmuxSnapshot?.focusedSurfaceID
         focusKnown = cmuxConnected && target != nil
       }
+      if focusKnown && !focused && receipt.needsAttention(agent) && !notificationsEnabled {
+        pendingNotification = true
+      }
       if focusKnown,
         receipt.observe(agent, focused: focused, notificationsEnabled: notificationsEnabled)
       {
@@ -313,6 +318,26 @@ final class AppModel: ObservableObject {
       receipts[agent.id] = receipt
     }
     if receipts != previousReceipts { persistReceipts() }
+    if pendingNotification { requestNotificationsIfNeeded() }
+  }
+
+  private func requestNotificationsIfNeeded() {
+    guard !askedToNotify else { return }
+    askedToNotify = true
+    Task {
+      let center = UNUserNotificationCenter.current()
+      guard await center.notificationSettings().authorizationStatus == .notDetermined else {
+        return
+      }
+      // An accessory app does not present the system prompt unless it is a regular app.
+      NSApp.setActivationPolicy(.regular)
+      NSApp.activate(ignoringOtherApps: true)
+      do {
+        _ = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+        await updateNotificationPermission()
+      } catch { self.error = error.localizedDescription }
+      NSApp.setActivationPolicy(.accessory)
+    }
   }
 
   private func persistReceipts() {
