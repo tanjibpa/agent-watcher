@@ -1,4 +1,4 @@
-"""Exercise the built hook through a real macOS login process and pseudo-terminal."""
+"""Exercise macOS terminal registration and native app polling."""
 
 import json
 import os
@@ -106,3 +106,22 @@ with tempfile.TemporaryDirectory(prefix="agent-watcher-terminal-") as directory:
             assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
             assert json.loads((state / "discovered.json").read_text()) == []
             print(f"PASS: {terminal_kind} {provider} background process with no terminal input is excluded")
+
+    probe = fixture / "cmux-app-probe"
+    subprocess.run(
+        ["swiftc", "-swift-version", "6", "-parse-as-library", "-o", str(probe)]
+        + [str(repository / "Sources/AgentWatcherCore" / name) for name in (
+            "Agent.swift", "ProcessIdentity.swift", "TerminalApplication.swift",
+            "CmuxSnapshot.swift", "CmuxClient.swift",
+        )]
+        + [str(Path(__file__).with_name("cmux-app.swift"))],
+        check=True,
+    )
+    executable = fixture / "cmux-response"
+    executable.write_text('#!/bin/sh\nprintf \'{"windows":[]}\\n\'\n')
+    executable.chmod(0o700)
+    result = subprocess.run(
+        [str(probe), str(executable)], capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    print(result.stdout.strip())

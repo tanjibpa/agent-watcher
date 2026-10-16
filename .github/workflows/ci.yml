@@ -18,7 +18,7 @@ jobs:
           node-version: '24'
       - name: Test native state and integrations
         run: swift test
-      - name: Test macOS login-shell registration
+      - name: Test macOS terminal integrations
         run: python3 Tests/Integration/terminal.test.py .build/debug/agent-watcher-hook
       - name: Test the Pi extension
         run: node --experimental-strip-types --test Tests/Integration/pi.test.mjs

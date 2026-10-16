@@ -44,6 +44,13 @@ public actor CmuxClient {
     process.standardOutput = output
     process.standardError = errors
     process.standardInput = FileHandle.nullDevice
+    let termination = AsyncStream<Int32> { continuation in
+      process.terminationHandler = {
+        continuation.yield($0.terminationStatus)
+        continuation.finish()
+      }
+    }
+    defer { process.terminationHandler = nil }
     try process.run()
     let deadline = Task {
       try await Task.sleep(for: .seconds(3))
@@ -56,8 +63,9 @@ public actor CmuxClient {
       async let stdout = Task.detached { try Self.read(outputFD) }.value
       async let stderr = Task.detached { try Self.read(errorFD) }.value
       let (result, errorData) = try await (stdout, stderr)
-      process.waitUntilExit()
-      guard process.terminationStatus == 0 else {
+      var iterator = termination.makeAsyncIterator()
+      let status = await iterator.next()
+      guard status == 0 else {
         let detail = snippet(String(decoding: errorData, as: UTF8.self), limit: 240)
         if detail.localizedCaseInsensitiveContains("access denied")
           || detail.localizedCaseInsensitiveContains("authentication required")
