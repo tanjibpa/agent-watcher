@@ -12,21 +12,29 @@ final class AppModel: ObservableObject {
   @Published var error: String?
   @Published var setupMessage: String?
   @Published var notificationsEnabled = false
-  @Published var connected = false
+  @Published var ghosttyConnected = false
+  @Published var cmuxConnected = false
   @Published var settingUp = false
   var onChange: (() -> Void)?
   private let store = StateStore()
   private let ghostty = GhosttyClient()
+  private let cmux = CmuxClient()
   private var targets: [String: String] = [:]
   private var bindingRetry: [String: Date] = [:]
   private var loop: Task<Void, Never>?
   private var activatedObserver: NSObjectProtocol?
   private let defaults = UserDefaults.standard
   private var ghosttyAuthorized = false
+  private var cmuxAuthorized = false
   private var processWatchers: [String: any DispatchSourceProcess] = [:]
 
   var attentionCount: Int { agents.filter { needsAttention($0) }.count }
   var anyIntegrationInstalled: Bool { installed.values.contains(true) }
+  var connected: Bool { ghosttyConnected || cmuxConnected }
+  var connectionSummary: String {
+    let names = [ghosttyConnected ? "Ghostty" : nil, cmuxConnected ? "cmux" : nil].compactMap { $0 }
+    return names.isEmpty ? "No terminal connected" : names.joined(separator: " + ") + " connected"
+  }
   var sortedAgents: [Agent] {
     agents.sorted {
       let first = needsAttention($0) ? 0 : ($0.working ? 1 : 2)
@@ -43,6 +51,7 @@ final class AppModel: ObservableObject {
       receipts = decoded
     }
     ghosttyAuthorized = defaults.bool(forKey: "ghosttyConnected")
+    cmuxAuthorized = defaults.bool(forKey: "cmuxConnected")
     refreshInstallation()
     activatedObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -93,9 +102,39 @@ final class AppModel: ObservableObject {
     do {
       _ = try await ghostty.snapshot(isRunning: ghosttyRunning)
       ghosttyAuthorized = true
-      connected = true
+      ghosttyConnected = true
       defaults.set(true, forKey: "ghosttyConnected")
       bindingRetry = [:]
+      error = nil
+      await refresh()
+    } catch { self.error = error.localizedDescription }
+  }
+
+  private var cmuxApplication: NSRunningApplication? {
+    NSWorkspace.shared.runningApplications.first {
+      $0.bundleIdentifier == TerminalApplication.cmux.bundleIdentifier
+    }
+  }
+
+  private var cmuxExecutable: URL? {
+    cmuxApplication?.bundleURL?.appendingPathComponent("Contents/Resources/bin/cmux")
+  }
+
+  private var cmuxFrontmost: Bool {
+    NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+      == TerminalApplication.cmux.bundleIdentifier
+  }
+
+  func connectCmux() async {
+    guard !settingUp else { return }
+    settingUp = true
+    defer { settingUp = false }
+    do {
+      guard let executable = cmuxExecutable else { throw CmuxClient.Failure.notRunning }
+      _ = try await cmux.snapshot(executable: executable, isFrontmost: cmuxFrontmost)
+      cmuxAuthorized = true
+      cmuxConnected = true
+      defaults.set(true, forKey: "cmuxConnected")
       error = nil
       await refresh()
     } catch { self.error = error.localizedDescription }
@@ -125,14 +164,25 @@ final class AppModel: ObservableObject {
         await refresh()
         return
       }
-      let target: String
-      if let cached = targets[agent.id] {
-        target = cached
-      } else {
-        target = try await ghostty.identify(agent.process)
-        targets[agent.id] = target
+      switch agent.terminalApplication {
+      case .ghostty:
+        let target: String
+        if let cached = targets[agent.id] {
+          target = cached
+        } else {
+          target = try await ghostty.identify(agent.process)
+          targets[agent.id] = target
+        }
+        try await ghostty.focus(target)
+      case .cmux:
+        guard let executable = cmuxExecutable else { throw CmuxClient.Failure.notRunning }
+        let snapshot = try await cmux.snapshot(executable: executable, isFrontmost: cmuxFrontmost)
+        guard agent.process.isAlive, let target = snapshot.target(for: agent.process) else {
+          throw CmuxClient.Failure.noTerminal
+        }
+        try await cmux.focus(target, executable: executable)
+        cmuxApplication?.activate(options: [])
       }
-      try await ghostty.focus(target)
       var receipt = receipts[agent.id] ?? AttentionState()
       _ = receipt.observe(agent, focused: true, notificationsEnabled: notificationsEnabled)
       receipts[agent.id] = receipt
@@ -207,10 +257,11 @@ final class AppModel: ObservableObject {
     if ghosttyAuthorized, ghosttyRunning {
       do {
         let snapshot = try await ghostty.snapshot(isRunning: true)
-        connected = true
+        ghosttyConnected = true
         focusedID = snapshot.focusedID
         targets = targets.filter { snapshot.terminalIDs.contains($0.value) }
-        for agent in agents where targets[agent.id] == nil {
+        for agent in agents where agent.terminalApplication == .ghostty && targets[agent.id] == nil
+        {
           guard Date() >= (bindingRetry[agent.id] ?? .distantPast) else { continue }
           bindingRetry[agent.id] = Date().addingTimeInterval(15)
           do { targets[agent.id] = try await ghostty.identify(agent.process) } catch {
@@ -218,16 +269,40 @@ final class AppModel: ObservableObject {
           }
         }
       } catch {
-        connected = false
+        ghosttyConnected = false
         self.error = error.localizedDescription
       }
     } else {
-      connected = false
+      ghosttyConnected = false
+    }
+    var cmuxSnapshot: CmuxSnapshot?
+    if cmuxAuthorized, let executable = cmuxExecutable {
+      do {
+        // Check app focus after the CLI read so switching apps during it cannot acknowledge a response.
+        cmuxSnapshot = try await cmux.snapshot(executable: executable, isFrontmost: true)
+        cmuxConnected = true
+      } catch {
+        cmuxConnected = false
+        self.error = error.localizedDescription
+      }
+    } else {
+      cmuxConnected = false
     }
     for agent in agents {
       var receipt = receipts[agent.id] ?? AttentionState()
-      let focused = targets[agent.id] != nil && targets[agent.id] == focusedID
-      if connected, targets[agent.id] != nil,
+      let focused: Bool
+      let focusKnown: Bool
+      switch agent.terminalApplication {
+      case .ghostty:
+        focused = targets[agent.id] != nil && targets[agent.id] == focusedID
+        focusKnown = ghosttyConnected && targets[agent.id] != nil
+      case .cmux:
+        let target = cmuxSnapshot?.target(for: agent.process)
+        focused =
+          cmuxFrontmost && target != nil && target?.surfaceID == cmuxSnapshot?.focusedSurfaceID
+        focusKnown = cmuxConnected && target != nil
+      }
+      if focusKnown,
         receipt.observe(agent, focused: focused, notificationsEnabled: notificationsEnabled)
       {
         notify(agent)

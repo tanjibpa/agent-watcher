@@ -46,6 +46,7 @@ public struct Agent: Codable, Identifiable, Equatable, Sendable {
   public var version = 1
   public var process: ProcessIdentity
   public var provider: Provider
+  public var terminal: TerminalApplication?
   public var sessionID: String
   public var cwd: String
   public var task = ""
@@ -60,6 +61,7 @@ public struct Agent: Codable, Identifiable, Equatable, Sendable {
   public var stoppedAt: TimeInterval = 0
 
   public var id: String { process.id }
+  public var terminalApplication: TerminalApplication { terminal ?? .ghostty }
   public var project: String {
     cwd.isEmpty ? "Unknown project" : URL(fileURLWithPath: cwd).lastPathComponent
   }
@@ -79,6 +81,7 @@ public struct Agent: Codable, Identifiable, Equatable, Sendable {
   ) {
     self.process = process
     self.provider = provider
+    terminal = process.terminalApplication
     self.sessionID = sessionID
     self.cwd = cwd
     updatedAt = now

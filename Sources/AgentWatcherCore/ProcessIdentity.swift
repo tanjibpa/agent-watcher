@@ -56,26 +56,12 @@ public struct ProcessIdentity: Codable, Equatable, Sendable {
   }
 
   public static func cli(provider: Provider, explicitPID: Int32? = nil) -> ProcessIdentity? {
-    var chain: [ProcessIdentity] = []
-    var next = explicitPID ?? getppid()
-    for _ in 0..<64 {
-      let previous = next
-      if let info = read(next) {
-        chain.append(info)
-        next = info.parentPID
-      } else if let parent = parentPID(of: next) {
-        // Ghostty's privileged login process hides full details, but exposes its parent PID.
-        next = parent
-      } else {
-        break
-      }
-      if next <= 1 || next == previous { break }
-    }
+    let chain = ancestry(from: explicitPID ?? getppid())
     guard
-      let ghostty = chain.firstIndex(where: {
-        $0.executable.hasSuffix("/Ghostty.app/Contents/MacOS/ghostty")
+      let terminal = chain.firstIndex(where: { process in
+        TerminalApplication.allCases.contains { $0.matches(executable: process.executable) }
       }),
-      let candidate = chain[..<ghostty].first(where: { process in
+      let candidate = chain[..<terminal].first(where: { process in
         if let explicitPID { return process.pid == explicitPID }
         let path = process.executable.lowercased()
         switch provider {
@@ -86,9 +72,7 @@ public struct ProcessIdentity: Codable, Equatable, Sendable {
       }), candidate.tty.hasPrefix("/dev/ttys")
     else { return nil }
     // CLI tools started by another agent are not separate interactive sessions.
-    let parents = chain.drop(while: { $0.pid != candidate.pid }).dropFirst().prefix(while: {
-      !$0.executable.hasSuffix("/Ghostty.app/Contents/MacOS/ghostty")
-    })
+    let parents = chain[..<terminal].drop(while: { $0.pid != candidate.pid }).dropFirst()
     guard
       !parents.contains(where: {
         $0.executable.hasSuffix("/codex") || $0.executable.hasSuffix("/claude")
@@ -96,6 +80,36 @@ public struct ProcessIdentity: Codable, Equatable, Sendable {
       })
     else { return nil }
     return candidate
+  }
+
+  public var terminalApplication: TerminalApplication? {
+    for process in Self.ancestry(from: pid) {
+      if let terminal = TerminalApplication.allCases.first(where: {
+        $0.matches(executable: process.executable)
+      }) {
+        return terminal
+      }
+    }
+    return nil
+  }
+
+  private static func ancestry(from pid: Int32) -> [ProcessIdentity] {
+    var chain: [ProcessIdentity] = []
+    var next = pid
+    for _ in 0..<64 {
+      let previous = next
+      if let info = read(next) {
+        chain.append(info)
+        next = info.parentPID
+      } else if let parent = parentPID(of: next) {
+        // The privileged login process hides full details, but exposes its parent PID.
+        next = parent
+      } else {
+        break
+      }
+      if next <= 1 || next == previous { break }
+    }
+    return chain
   }
 
   private static func parentPID(of pid: Int32) -> Int32? {

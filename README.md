@@ -1,28 +1,29 @@
 # Agent Watcher
 
-See your open Pi, Claude Code, and Codex CLIs in the macOS menu bar, then return to the exact Ghostty tab or split pane with one click.
+See your open Pi, Claude Code, and Codex CLIs in the macOS menu bar, then return to the exact Ghostty or cmux tab or split pane with one click.
 
 - One entry per live CLI, including idle sessions and agents in split panes.
 - The CLI name, project, shortened initial prompt, status, and current tool activity in each entry.
 - Attention indicators for approvals, questions, and unread completed responses.
 - Notifications that stay quiet for the focused agent.
-- Automatic removal when a CLI exits, even if its Ghostty tab stays open.
+- Automatic removal when a CLI exits, even if its terminal tab stays open.
 - Your usual `pi`, `claude`, and `codex` commands, with one-time integration setup and no persistent helper daemon.
 
 This is a development preview.
-Live Ghostty navigation and macOS notification delivery still need manual verification before a signed public release.
+Live terminal navigation and macOS notification delivery still need manual verification before a signed public release.
 
 ## Requirements
 
 - macOS 14 or later on Apple silicon or Intel.
-- [Ghostty](https://ghostty.org/download) 1.3 or later with AppleScript support enabled, which is the default.
+- [Ghostty](https://ghostty.org/download) 1.3 or later with AppleScript support enabled, or [cmux](https://cmux.com/).
+  The cmux integration is validated against version 0.65.1.
 - Pi, Claude Code, or Codex CLI installed on the same Mac.
 - Xcode with the Swift 6 toolchain if you build from source.
 
 The integration baseline is Pi 1.2.0, Claude Code 2.1.300, and Codex CLI 0.162.1.
 Earlier CLI versions are not validated.
-Agents must run directly in standalone Ghostty on your Mac.
-Remote SSH sessions, tmux, and cmux are outside the supported setup.
+Agents must run directly in Ghostty or cmux on your Mac.
+Remote SSH sessions and tmux are outside the supported setup.
 
 ## Install
 
@@ -77,7 +78,11 @@ There is no signed release installer yet.
    In Codex, run `/hooks` and trust the Agent Watcher hooks.
    Agent Watcher does not grant this trust automatically.
 4. Restart Pi, Claude Code, and Codex sessions opened before setup so they load the integrations.
-5. Click **Connect Ghostty** and allow Agent Watcher to control Ghostty when macOS asks.
+5. Connect the terminal apps you use.
+   For Ghostty, click **Connect Ghostty** and allow macOS Automation access.
+   For cmux, open **cmux Settings > Automation**, set **Socket Control Mode** to **Automation** or **Password**, then click **Connect cmux** in Agent Watcher.
+   Automation mode permits local apps running as your macOS user to control cmux through its socket.
+   Password mode uses the credentials already configured for the cmux CLI.
 6. If you want notifications, click **Enable notifications** and allow them.
 7. Click **Back to agents** to see your sessions.
    Optionally enable **Launch at login** to start Agent Watcher when you sign in to your Mac.
@@ -104,13 +109,14 @@ A Finder-launched app does not inherit variables set only in your shell configur
 
 ## Usage
 
-1. Open a Ghostty tab or split pane and launch `pi`, `claude`, or `codex` as usual.
+1. Open a Ghostty or cmux tab or split pane and launch `pi`, `claude`, or `codex` as usual.
 2. Click Agent Watcher's terminal icon in the menu bar.
 3. Find your session by its CLI name, project, or shortened initial prompt.
-4. Click the entry to return to that session's Ghostty tab or split pane.
+4. Click the entry to return to that session's terminal tab or split pane.
 
-Each entry also shows the current activity, such as reading a file, editing files, or running a command.
+Each entry identifies its terminal app and shows the current activity, such as reading a file, editing files, or running a command.
 The list keeps open CLIs even when they are waiting for another message.
+Sessions in both terminal apps appear in the same list.
 When you exit a CLI or close its pane, its entry disappears.
 
 | Status | Meaning |
@@ -153,9 +159,9 @@ Enable **Launch at login** in setup if you want it to start automatically.
 ### The list is empty or a session is missing
 
 Open setup and confirm that your CLI's integration is marked **Installed**.
-Click **Update integrations**, then restart the CLI in standalone Ghostty.
+Click **Update integrations**, then restart the CLI in Ghostty or cmux.
 For Pi, `/reload` also loads the current extension.
-Agent Watcher lists local CLIs with verified Ghostty process ancestry, rather than saved conversations or agent subprocesses.
+Agent Watcher lists local CLIs with verified terminal-app process ancestry, rather than saved conversations or agent subprocesses.
 
 For Codex, confirm that you disabled `daemon_auto_start` and trusted the hooks through `/hooks`.
 A newly opened Codex session can show **Waiting for status** until you send its first prompt.
@@ -173,11 +179,19 @@ Check **System Settings > Privacy & Security > Automation** and allow Agent Watc
 If you disabled Ghostty's AppleScript support, enable `macos-applescript` in your Ghostty configuration and restart Ghostty.
 See [Ghostty's AppleScript documentation](https://ghostty.org/docs/features/applescript) for its configuration and permissions.
 
+### cmux entries cannot be opened or connected
+
+In **cmux Settings > Automation**, choose **Automation** or **Password** for **Socket Control Mode**, then click **Reconnect cmux** in Agent Watcher.
+The default **cmux processes only** mode rejects external apps such as Agent Watcher.
+Agent Watcher uses the CLI bundled with the running cmux app, so it does not need `cmux` on your shell path.
+Existing Agent Watcher hooks work in both terminals.
+Restart existing CLIs or run `/reload` in Pi after updating the integrations.
+
 ### Notifications do not appear
 
 Click **Enable notifications** in setup or open **Notification settings…** and allow Agent Watcher's notifications.
 The focused agent stays quiet.
-Agent Watcher also waits to notify until Ghostty is connected and it can determine focus.
+Agent Watcher also waits to notify until the agent's terminal app is connected and it can determine focus.
 
 ## Uninstall
 
@@ -205,20 +219,23 @@ The app stores completion acknowledgments in local preferences and deletes snaps
 
 Claude Code and Codex report lifecycle events through the native hook executable.
 Pi reports through its TypeScript extension using the same local protocol.
-Process identity includes the process ID and start time, and registration verifies Ghostty ancestry and the terminal device.
+Process identity includes the process ID and start time, and registration verifies its terminal app ancestry and terminal device.
 The app watches process exits and reconciles the list every second.
 It can discover native Claude Code and Codex processes before their first hook event.
 Concurrent hook updates use file locks and atomic replacement.
 Monitoring failures do not block agent tools or add anything to the model's context.
 
 Ghostty navigation briefly writes a terminal-title marker to identify the exact pane, caches its terminal ID, and restores the original title.
+For cmux, the app reads terminal devices and stable window, workspace, and surface IDs through its bundled CLI.
+Clicking an agent focuses the exact cmux surface, even after moving it to another workspace.
+Background polling does not change focus.
 The app does not choose a pane by its working directory, so agents in the same project remain separate.
 
 ## Development
 
 The Swift package has no external dependencies.
 `AgentWatcherCore` owns state transitions, hook parsing, process identity, persistence, and integration setup.
-`AgentWatcher` owns the menu bar UI, Ghostty navigation, and notifications.
+`AgentWatcher` owns the menu bar UI, terminal navigation, and notifications.
 
 ```sh
 swift test
@@ -234,7 +251,8 @@ Set `AGENT_WATCHER_DATA_DIR` to an isolated directory when testing the app and h
 
 Before a release, manually verify:
 
-1. Start two agents in the same working directory in different Ghostty split panes.
+1. Start two agents in the same working directory in different split panes in each terminal app.
+   Also test agents in separate cmux windows and workspaces.
 2. Confirm each entry focuses its own pane and restores its original title.
 3. Trigger an approval, an interactive question, tool activity, and completion in each supported CLI.
 4. Confirm a focused agent stays quiet while a background agent notifies you.

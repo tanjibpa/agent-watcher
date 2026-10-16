@@ -33,8 +33,10 @@ struct PopoverView: View {
         VStack(spacing: 10) {
           Image(systemName: "terminal").font(.system(size: 32)).foregroundStyle(.secondary)
           Text("No agents open").font(.headline)
-          Text("Start Pi, Claude Code, or Codex in Ghostty. Restart CLIs opened before setup.")
-            .foregroundStyle(.secondary).multilineTextAlignment(.center)
+          Text(
+            "Start Pi, Claude Code, or Codex in Ghostty or cmux. Restart CLIs opened before setup."
+          )
+          .foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .padding(32)
       } else {
@@ -63,7 +65,7 @@ struct PopoverView: View {
       Divider()
       HStack {
         Circle().fill(model.connected ? Color.green : Color.secondary).frame(width: 6, height: 6)
-        Text(model.connected ? "Ghostty connected" : "Ghostty not connected").font(.caption)
+        Text(model.connectionSummary).font(.caption)
           .foregroundStyle(.secondary)
         Spacer()
         Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.borderless)
@@ -114,12 +116,20 @@ struct PopoverView: View {
       )
       .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
       Divider()
-      Button(model.connected ? "Reconnect Ghostty" : "Connect Ghostty") {
+      Button(model.ghosttyConnected ? "Reconnect Ghostty" : "Connect Ghostty") {
         Task { await model.connectGhostty() }
       }
       .disabled(model.settingUp)
       Text(
         "Allow Agent Watcher to control Ghostty when macOS asks. This lets you return to the exact tab or split pane."
+      )
+      .font(.caption).foregroundStyle(.secondary)
+      Button(model.cmuxConnected ? "Reconnect cmux" : "Connect cmux") {
+        Task { await model.connectCmux() }
+      }
+      .disabled(model.settingUp)
+      Text(
+        "In cmux Settings > Automation, choose Automation or Password for Socket Control Mode. This lets Agent Watcher identify and select the exact pane."
       )
       .font(.caption).foregroundStyle(.secondary)
       Button(model.notificationsEnabled ? "Notification settings…" : "Enable notifications") {
@@ -178,8 +188,9 @@ private struct AgentRow: View {
           Image(systemName: "arrow.up.forward").font(.caption2).foregroundStyle(.tertiary)
         }
         Text(agent.task.isEmpty ? "No prompt yet" : agent.task).lineLimit(1).truncationMode(.tail)
-        Text(agent.activity).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(
-          .middle)
+        Text("\(agent.terminalApplication.title) · \(agent.activity)").font(.caption)
+          .foregroundStyle(.secondary).lineLimit(1).truncationMode(
+            .middle)
       }
       .padding(12)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -192,9 +203,9 @@ private struct AgentRow: View {
     .onHover { hovering = $0 }
     .help(agent.cwd + "\n" + agent.task + "\n" + agent.activity)
     .accessibilityLabel(
-      "\(agent.provider.title), \(agent.project), \(status), \(agent.task), \(agent.activity)"
+      "\(agent.provider.title), \(agent.terminalApplication.title), \(agent.project), \(status), \(agent.task), \(agent.activity)"
     )
-    .accessibilityHint("Focus this agent’s Ghostty pane")
+    .accessibilityHint("Focus this agent's \(agent.terminalApplication.title) pane")
   }
 
   private var status: String {
