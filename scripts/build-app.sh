@@ -15,6 +15,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary_directory/AgentWatcher" "$app/Contents/MacOS/AgentWatcher"
 cp "$binary_directory/agent-watcher-hook" "$app/Contents/MacOS/agent-watcher-hook"
 cp Integrations/pi/agent-watcher.ts "$app/Contents/Resources/agent-watcher.ts"
+cp Resources/AppIcon.icns Resources/MenuBarIcon.pdf "$app/Contents/Resources/"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 if [[ -n "${APP_VERSION:-}" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$app/Contents/Info.plist"

@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
+/// Menu bar glyph size in points; the bar is 22pt tall.
+private let menuBarIconSize: CGFloat = 18
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   private var item: NSStatusItem!
@@ -14,8 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     model = AppModel()
     item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     if let button = item.button {
-      button.image = NSImage(
-        systemSymbolName: "terminal", accessibilityDescription: "Agent Watcher")
+      button.image = menuBarIcon()
       button.imagePosition = .imageLeading
       button.target = self
       button.action = #selector(togglePopover)
@@ -27,6 +29,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     model.onChange = { [weak self] in self?.updateStatus() }
     updateStatus()
     if !model.anyIntegrationInstalled { showPopover() }
+  }
+
+  // Bundled template glyph, tinted by macOS for light/dark/highlight.
+  // Falls back to an SF Symbol when run outside the app bundle (swift run).
+  private func menuBarIcon() -> NSImage? {
+    guard let image = Bundle.main.image(forResource: "MenuBarIcon") else {
+      return NSImage(systemSymbolName: "terminal", accessibilityDescription: "Agent Watcher")
+    }
+
+    image.isTemplate = true
+    image.size = NSSize(width: menuBarIconSize, height: menuBarIconSize)
+    image.accessibilityDescription = "Agent Watcher"
+    return image
   }
 
   private func updateStatus() {
