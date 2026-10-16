@@ -259,6 +259,7 @@ final class AppModel: ObservableObject {
       do {
         let snapshot = try await ghostty.snapshot(isRunning: true)
         ghosttyConnected = true
+        if error?.hasPrefix("Agent Watcher could not control Ghostty") == true { error = nil }
         focusedID = snapshot.focusedID
         targets = targets.filter { snapshot.terminalIDs.contains($0.value) }
         for agent in agents where agent.terminalApplication == .ghostty && targets[agent.id] == nil

@@ -30,7 +30,7 @@ actor GhosttyClient {
     let imports = foundation ? "use framework \"Foundation\"\nuse scripting additions\n" : ""
     process.arguments = [
       "-e",
-      "\(imports)with timeout of 2 seconds\ntell application id \"com.mitchellh.ghostty\"\n\(body)\nend tell\nend timeout",
+      "\(imports)with timeout of 5 seconds\ntell application id \"com.mitchellh.ghostty\"\n\(body)\nend tell\nend timeout",
     ]
     let output = Pipe()
     let errors = Pipe()
@@ -38,7 +38,7 @@ actor GhosttyClient {
     process.standardError = errors
     try process.run()
     let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
-    DispatchQueue.global().asyncAfter(deadline: .now() + 3, execute: timeout)
+    DispatchQueue.global().asyncAfter(deadline: .now() + 8, execute: timeout)
     let data = output.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     timeout.cancel()
@@ -64,11 +64,8 @@ actor GhosttyClient {
               set activeID to id of focused terminal of selected tab of front window
           end try
       end if
-      set resultText to activeID
-      repeat with term in terminals
-          set resultText to resultText & linefeed & (id of term)
-      end repeat
-      return resultText
+      set AppleScript's text item delimiters to linefeed
+      return activeID & linefeed & ((id of every terminal) as text)
       """)
     let lines = result.components(separatedBy: .newlines)
     let active = lines.first.flatMap { UUID(uuidString: $0)?.uuidString }
@@ -81,9 +78,13 @@ actor GhosttyClient {
     guard identity.isAlive else { throw GhosttyError.staleProcess }
     let savedTitles = try run(
       """
+      set ids to id of every terminal
+      set names to name of every terminal
+      if class of ids is not list then set ids to {ids}
+      if class of names is not list then set names to {names}
       set titleDictionary to current application's NSMutableDictionary's dictionary()
-      repeat with term in terminals
-          titleDictionary's setObject:(name of term as text) forKey:(id of term as text)
+      repeat with i from 1 to (count of ids)
+          titleDictionary's setObject:((item i of names) as text) forKey:((item i of ids) as text)
       end repeat
       set dataValue to (current application's NSJSONSerialization's dataWithJSONObject:titleDictionary options:0 |error|:(missing value))
       return (current application's NSString's alloc()'s initWithData:dataValue encoding:4) as text
@@ -112,8 +113,12 @@ actor GhosttyClient {
     let result = try run(
       """
       repeat 15 times
-          repeat with term in terminals
-              if name of term is "\(marker)" then return id of term
+          set ids to id of every terminal
+          set names to name of every terminal
+          if class of ids is not list then set ids to {ids}
+          if class of names is not list then set names to {names}
+          repeat with i from 1 to (count of ids)
+              if (item i of names) as text is "\(marker)" then return (item i of ids) as text
           end repeat
           delay 0.02
       end repeat
