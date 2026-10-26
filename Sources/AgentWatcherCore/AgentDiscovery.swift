@@ -14,6 +14,12 @@ public enum AgentDiscovery {
 
   static func nativeAgents(pids: [Int32]) -> [Agent] {
     pids.compactMap { pid -> Agent? in
+      // Most processes have no terminal, so skip them before the costlier path and tty lookups.
+      var info = proc_bsdinfo()
+      let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+      guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size,
+        info.e_tdev != UInt32.max
+      else { return nil }
       guard let process = ProcessIdentity.read(pid), process.tty.hasPrefix("/dev/ttys") else {
         return nil
       }
