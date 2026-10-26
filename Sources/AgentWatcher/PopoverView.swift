@@ -42,21 +42,23 @@ struct PopoverView: View {
       } else {
         ScrollView {
           LazyVStack(spacing: 2) {
-            ForEach(model.sortedAgents) { agent in
-              AgentRow(
-                agent: agent, needsAttention: model.needsAttention(agent),
-                unread: model.unread(agent)
-              ) {
-                Task {
-                  await model.focus(agent)
-                  if model.error == nil { dismiss() }
-                }
+            ForEach(activeAgents) { agentRow($0) }
+            if !idleAgents.isEmpty {
+              HStack(spacing: 8) {
+                Text("Idle · \(idleAgents.count)").font(.caption).foregroundStyle(.secondary)
+                VStack { Divider() }
               }
+              .padding(.horizontal, 12).padding(.top, activeAgents.isEmpty ? 4 : 10)
+              .padding(.bottom, 4)
+              .accessibilityElement(children: .combine)
+              ForEach(idleAgents) { agentRow($0) }
             }
           }
           .padding(8)
         }
-        .frame(height: min(CGFloat(model.agents.count) * 100 + 16, 540))
+        .frame(
+          height: min(
+            CGFloat(model.agents.count) * 100 + (idleAgents.isEmpty ? 0 : 32) + 16, 540))
       }
       if let error = model.error {
         Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
@@ -81,6 +83,25 @@ struct PopoverView: View {
       Text(
         "This removes Agent Watcher’s hooks and Pi extension. Your other CLI settings and hooks stay in place."
       )
+    }
+  }
+
+  // Idle agents sit below a divider so active ones stay at the top.
+  private func isIdle(_ agent: Agent) -> Bool {
+    !agent.sessionID.isEmpty && !model.needsAttention(agent) && !agent.working
+  }
+  private var activeAgents: [Agent] { model.sortedAgents.filter { !isIdle($0) } }
+  private var idleAgents: [Agent] { model.sortedAgents.filter(isIdle) }
+
+  private func agentRow(_ agent: Agent) -> some View {
+    AgentRow(
+      agent: agent, needsAttention: model.needsAttention(agent),
+      unread: model.unread(agent)
+    ) {
+      Task {
+        await model.focus(agent)
+        if model.error == nil { dismiss() }
+      }
     }
   }
 
