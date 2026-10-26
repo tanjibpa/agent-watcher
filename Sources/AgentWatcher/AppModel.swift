@@ -25,6 +25,10 @@ final class AppModel: ObservableObject {
   private var nextDiscovery = Date.distantPast
   private var nextTerminalPoll = Date.distantPast
   private var nextPermissionCheck = Date.distantPast
+  private var nextFocusPoll: [TerminalApplication: Date] = [:]
+  private var checkedTokens: [String: String] = [:]
+  private var stored: [Agent] = []
+  private var storedModified: Date?
   private var loop: Task<Void, Never>?
   private var activatedObserver: NSObjectProtocol?
   private let defaults = UserDefaults.standard
@@ -60,7 +64,7 @@ final class AppModel: ObservableObject {
     refreshInstallation()
     activatedObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-    ) { [weak self] _ in Task { @MainActor in await self?.refresh() } }
+    ) { [weak self] _ in Task { @MainActor in await self?.refreshFocus() } }
     loop = Task { [weak self] in
       while !Task.isCancelled {
         guard let self else { return }
@@ -213,7 +217,43 @@ final class AppModel: ObservableObject {
     nextDiscovery = .distantPast
     nextTerminalPoll = .distantPast
     nextPermissionCheck = .distantPast
+    storedModified = nil
     await refresh()
+  }
+
+  /// Switching apps can change which pane is focused, so the next pass checks focus right away.
+  private func refreshFocus() async {
+    nextFocusPoll = [:]
+    await refresh()
+  }
+
+  /// Whether a pass must ask the terminal app about its panes.
+  private func needsTerminalQuery(
+    _ terminal: TerminalApplication, attentive: [Agent], due: Bool
+  ) -> Bool {
+    let waiting = attentive.filter { $0.terminalApplication == terminal }
+    if due { return true }
+    if waiting.isEmpty { return false }
+    // A new approval or response needs its focus known before it can notify.
+    if waiting.contains(where: { checkedTokens[$0.id] != $0.attentionToken }) { return true }
+    if terminal == .ghostty,
+      waiting.contains(where: {
+        targets[$0.id] == nil && Date() >= (bindingRetry[$0.id] ?? .distantPast)
+      })
+    {
+      return true
+    }
+    // A pane can only be in focus while its app is frontmost, so a background app is left alone.
+    guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == terminal.bundleIdentifier
+    else { return false }
+    return Date() >= (nextFocusPoll[terminal] ?? .distantPast)
+  }
+
+  private func markChecked(_ terminal: TerminalApplication, attentive: [Agent]) {
+    nextFocusPoll[terminal] = Date().addingTimeInterval(3)
+    for agent in attentive where agent.terminalApplication == terminal {
+      checkedTokens[agent.id] = agent.attentionToken
+    }
   }
 
   private var refreshing = false
@@ -232,7 +272,14 @@ final class AppModel: ObservableObject {
     }
     let previousReceipts = receipts
     do {
-      let stored = try store.agents()
+      // Hooks replace session files atomically, which also updates the directory's date.
+      let modified =
+        (try? store.sessionsDirectory.resourceValues(forKeys: [.contentModificationDateKey]))?
+        .contentModificationDate
+      if modified == nil || modified != storedModified {
+        stored = try store.agents()
+        storedModified = modified
+      }
       var live = stored.filter { $0.process.isAlive }
       for closed in stored where !closed.process.isAlive { try store.remove(closed) }
       let reportedIDs = Set(live.map(\.id))
@@ -254,6 +301,7 @@ final class AppModel: ObservableObject {
       receipts = receipts.filter { liveIDs.contains($0.key) }
     }
     bindingRetry = bindingRetry.filter { liveIDs.contains($0.key) }
+    checkedTokens = checkedTokens.filter { liveIDs.contains($0.key) }
     for id in Array(processWatchers.keys) where !liveIDs.contains(id) {
       processWatchers.removeValue(forKey: id)?.cancel()
     }
@@ -290,7 +338,8 @@ final class AppModel: ObservableObject {
     if terminalPollDue { nextTerminalPoll = Date().addingTimeInterval(30) }
     var focusedID: String?
     if ghosttyAuthorized, ghosttyRunning {
-      if terminalPollDue || attentive.contains(where: { $0.terminalApplication == .ghostty }) {
+      if needsTerminalQuery(.ghostty, attentive: attentive, due: terminalPollDue) {
+        markChecked(.ghostty, attentive: attentive)
         do {
           let snapshot = try await ghostty.snapshot(isRunning: true)
           ghosttyConnected = true
@@ -316,7 +365,8 @@ final class AppModel: ObservableObject {
     var cmuxSnapshot: CmuxSnapshot?
     var pendingNotification = false
     if cmuxAuthorized, let executable = cmuxExecutable {
-      if terminalPollDue || attentive.contains(where: { $0.terminalApplication == .cmux }) {
+      if needsTerminalQuery(.cmux, attentive: attentive, due: terminalPollDue) {
+        markChecked(.cmux, attentive: attentive)
         do {
           // Check app focus after the CLI read so switching apps during it
           // cannot acknowledge a response.
@@ -388,8 +438,11 @@ final class AppModel: ObservableObject {
 
   private func updateNotificationPermission() async {
     let settings = await UNUserNotificationCenter.current().notificationSettings()
-    notificationsEnabled =
+    let enabled =
       settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+    // Alerts held back without permission are delivered once it is granted.
+    if enabled && !notificationsEnabled { checkedTokens = [:] }
+    notificationsEnabled = enabled
   }
 
   private func notify(_ agent: Agent) {
