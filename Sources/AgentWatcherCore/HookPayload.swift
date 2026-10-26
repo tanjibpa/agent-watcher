@@ -54,7 +54,13 @@ public enum HookPayload {
     event.isQuestion = ["AskUserQuestion", "request_user_input", "ask_user", "question"].contains(
       tool)
     event.activity = describe(tool: tool, input: input)
-    if kind == .approval {
+    if event.isQuestion {
+      event.question = snippet(question(in: input), limit: 240)
+    }
+    if kind == .approval, event.isQuestion {
+      // Claude Code can ask permission to show AskUserQuestion; it is still a question.
+      event.activity = "Waiting for your answer"
+    } else if kind == .approval {
       event.activity = "Approval needed" + (event.activity.isEmpty ? "" : ": " + event.activity)
       if name == "Notification" { event.toolKey = "notification-permission" }
     } else if kind == .inputStart || kind == .inputEnd {
@@ -66,9 +72,23 @@ public enum HookPayload {
       event.toolID = "compaction"
       event.activity = "Compacting conversation"
     }
-    if kind == .toolStart, event.isQuestion { event.activity = "Answer the agent’s question" }
+    if kind == .toolStart, event.isQuestion { event.activity = "Waiting for your answer" }
     event.activity = snippet(event.activity, limit: 180)
     return (event, (payload["cli_pid"] as? NSNumber)?.int32Value)
+  }
+
+  /// Claude Code's AskUserQuestion and Codex's request_user_input pass a `questions` array;
+  /// Pi question tools usually pass a single string.
+  public static func question(in input: [String: Any]) -> String {
+    if let questions = input["questions"] as? [[String: Any]], let first = questions.first {
+      let text = (first["question"] ?? first["header"]) as? String ?? ""
+      guard !text.isEmpty else { return "" }
+      return questions.count > 1 ? "\(text) (+\(questions.count - 1) more)" : text
+    }
+    for key in ["question", "prompt", "message", "title"] {
+      if let text = input[key] as? String, !text.isEmpty { return text }
+    }
+    return ""
   }
 
   public static func describe(tool: String, input: [String: Any]) -> String {

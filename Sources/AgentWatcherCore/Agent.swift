@@ -26,6 +26,7 @@ public struct HookEvent: Sendable {
   public var toolKey = ""
   public var activity = ""
   public var isQuestion = false
+  public var question = ""
   public var timestamp = Date().timeIntervalSince1970
 
   public init(kind: EventKind, sessionID: String, cwd: String) {
@@ -40,6 +41,8 @@ public struct Activity: Codable, Equatable, Sendable {
   public var toolID: String
   public var text: String
   public var startedAt: TimeInterval
+  /// The question text when this blocker is the agent asking you something; empty if the CLI gave none.
+  public var question: String? = nil
 }
 
 public struct Agent: Codable, Identifiable, Equatable, Sendable {
@@ -64,6 +67,11 @@ public struct Agent: Codable, Identifiable, Equatable, Sendable {
   public var terminalApplication: TerminalApplication { terminal ?? .ghostty }
   public var project: String {
     cwd.isEmpty ? "Unknown project" : URL(fileURLWithPath: cwd).lastPathComponent
+  }
+  /// The most recent unanswered question, or nil when the agent is not asking one.
+  public var question: String? {
+    blockers.values.filter { $0.question != nil }.max(by: { $0.startedAt < $1.startedAt })?
+      .question
   }
   public var activity: String {
     if sessionID.isEmpty { return "Waiting for the CLI to report status" }
@@ -98,7 +106,8 @@ public struct Agent: Codable, Identifiable, Equatable, Sendable {
     if !event.cwd.isEmpty { cwd = event.cwd }
     updatedAt = max(updatedAt, event.timestamp)
     let activity = Activity(
-      key: event.toolKey, toolID: event.toolID, text: event.activity, startedAt: event.timestamp)
+      key: event.toolKey, toolID: event.toolID, text: event.activity, startedAt: event.timestamp,
+      question: event.isQuestion ? event.question : nil)
     switch event.kind {
     case .session:
       break
