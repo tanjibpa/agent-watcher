@@ -23,12 +23,16 @@ final class AppModel: ObservableObject {
   private var bindingRetry: [String: Date] = [:]
   private var discovered: [Agent] = []
   private var nextDiscovery = Date.distantPast
-  private var nextTerminalPoll = Date.distantPast
+  private var terminalQueryRequested = true
+  private var focusCheck: Set<TerminalApplication> = []
   private var nextPermissionCheck = Date.distantPast
-  private var nextFocusPoll: [TerminalApplication: Date] = [:]
   private var checkedTokens: [String: String] = [:]
   private var stored: [Agent] = []
   private var storedModified: Date?
+  private var sessionsWatcher: (any DispatchSourceFileSystemObject)?
+  private var watchedInode: UInt64?
+  private var scheduledRefresh: Task<Void, Never>?
+  private var refreshAgain = false
   private var loop: Task<Void, Never>?
   private var activatedObserver: NSObjectProtocol?
   private let defaults = UserDefaults.standard
@@ -64,13 +68,57 @@ final class AppModel: ObservableObject {
     refreshInstallation()
     activatedObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-    ) { [weak self] _ in Task { @MainActor in await self?.refreshFocus() } }
+    ) { [weak self] notification in
+      let bundleID =
+        (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+        .bundleIdentifier
+      Task { @MainActor in await self?.refreshFocus(bundleID: bundleID) }
+    }
+    // Hooks report through the sessions directory, so its file events drive updates. The slow
+    // loop only finds CLIs that have not sent a hook event yet.
     loop = Task { [weak self] in
       while !Task.isCancelled {
         guard let self else { return }
         await self.refresh()
-        try? await Task.sleep(for: .seconds(1))
+        try? await Task.sleep(for: .seconds(5))
       }
+    }
+  }
+
+  private func watchSessions() {
+    var info = stat()
+    let path = store.sessionsDirectory.path
+    if stat(path, &info) != 0 {
+      try? store.prepare()
+      guard stat(path, &info) == 0 else { return }
+    }
+    // A removed or replaced directory needs a new watcher.
+    guard sessionsWatcher == nil || watchedInode != UInt64(info.st_ino) else { return }
+    sessionsWatcher?.cancel()
+    let descriptor = open(path, O_EVTONLY)
+    guard descriptor >= 0 else {
+      sessionsWatcher = nil
+      return
+    }
+    let watcher = DispatchSource.makeFileSystemObjectSource(
+      fileDescriptor: descriptor, eventMask: [.write, .delete, .rename], queue: .main)
+    watcher.setEventHandler { [weak self] in
+      Task { @MainActor in self?.scheduleRefresh() }
+    }
+    watcher.setCancelHandler { close(descriptor) }
+    watcher.resume()
+    sessionsWatcher = watcher
+    watchedInode = UInt64(info.st_ino)
+  }
+
+  /// One hook event writes a lock and a replacement file, so nearby events share a pass.
+  private func scheduleRefresh() {
+    guard scheduledRefresh == nil else { return }
+    scheduledRefresh = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(100))
+      guard let self else { return }
+      self.scheduledRefresh = nil
+      await self.refresh()
     }
   }
 
@@ -215,15 +263,19 @@ final class AppModel: ObservableObject {
   /// Opening the list is a direct request for current state, so the gated work runs again.
   func refreshNow() async {
     nextDiscovery = .distantPast
-    nextTerminalPoll = .distantPast
+    terminalQueryRequested = true
     nextPermissionCheck = .distantPast
     storedModified = nil
     await refresh()
   }
 
-  /// Switching apps can change which pane is focused, so the next pass checks focus right away.
-  private func refreshFocus() async {
-    nextFocusPoll = [:]
+  /// Bringing a terminal app to the front can reveal a finished agent's pane, so its focus is
+  /// checked once. Other app switches only refresh local state.
+  private func refreshFocus(bundleID: String?) async {
+    if let terminal = TerminalApplication.allCases.first(where: { $0.bundleIdentifier == bundleID })
+    {
+      focusCheck.insert(terminal)
+    }
     await refresh()
   }
 
@@ -232,6 +284,7 @@ final class AppModel: ObservableObject {
     _ terminal: TerminalApplication, attentive: [Agent], due: Bool
   ) -> Bool {
     let waiting = attentive.filter { $0.terminalApplication == terminal }
+    let focusRequested = focusCheck.remove(terminal) != nil
     if due { return true }
     if waiting.isEmpty { return false }
     // A new approval or response needs its focus known before it can notify.
@@ -243,14 +296,10 @@ final class AppModel: ObservableObject {
     {
       return true
     }
-    // A pane can only be in focus while its app is frontmost, so a background app is left alone.
-    guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == terminal.bundleIdentifier
-    else { return false }
-    return Date() >= (nextFocusPoll[terminal] ?? .distantPast)
+    return focusRequested
   }
 
   private func markChecked(_ terminal: TerminalApplication, attentive: [Agent]) {
-    nextFocusPoll[terminal] = Date().addingTimeInterval(3)
     for agent in attentive where agent.terminalApplication == terminal {
       checkedTokens[agent.id] = agent.attentionToken
     }
@@ -264,12 +313,24 @@ final class AppModel: ObservableObject {
   }
 
   func refresh() async {
-    guard !refreshing else { return }
+    // An event that arrives during a pass must not be lost, because nothing polls for it later.
+    guard !refreshing else {
+      refreshAgain = true
+      return
+    }
     refreshing = true
     defer {
       refreshing = false
       onChange?()
     }
+    repeat {
+      refreshAgain = false
+      watchSessions()
+      await refreshPass()
+    } while refreshAgain
+  }
+
+  private func refreshPass() async {
     let previousReceipts = receipts
     do {
       // Hooks replace session files atomically, which also updates the directory's date.
@@ -326,16 +387,16 @@ final class AppModel: ObservableObject {
       watcher.resume()
       processWatchers[agent.id] = watcher
     }
-    // Pane focus only matters for agents that need attention, so each terminal app is queried
-    // when one of its agents does, plus a periodic check that keeps the connection status current.
+    // Pane focus only matters for agents that need attention, so a terminal app is queried when
+    // one of its agents has a new event, when it comes to the front, or when the list opens.
     let attentive = agents.filter { needsAttention($0) }
     // Permission can change in System Settings, so re-read it when it matters rather than always.
     if Date() >= nextPermissionCheck || (!notificationsEnabled && !attentive.isEmpty) {
       nextPermissionCheck = Date().addingTimeInterval(30)
       await updateNotificationPermission()
     }
-    let terminalPollDue = Date() >= nextTerminalPoll
-    if terminalPollDue { nextTerminalPoll = Date().addingTimeInterval(30) }
+    let terminalPollDue = terminalQueryRequested
+    terminalQueryRequested = false
     var focusedID: String?
     if ghosttyAuthorized, ghosttyRunning {
       if needsTerminalQuery(.ghostty, attentive: attentive, due: terminalPollDue) {
