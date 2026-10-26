@@ -21,6 +21,10 @@ final class AppModel: ObservableObject {
   private let cmux = CmuxClient()
   private var targets: [String: String] = [:]
   private var bindingRetry: [String: Date] = [:]
+  private var discovered: [Agent] = []
+  private var nextDiscovery = Date.distantPast
+  private var nextTerminalPoll = Date.distantPast
+  private var nextPermissionCheck = Date.distantPast
   private var loop: Task<Void, Never>?
   private var activatedObserver: NSObjectProtocol?
   private let defaults = UserDefaults.standard
@@ -167,14 +171,19 @@ final class AppModel: ObservableObject {
       }
       switch agent.terminalApplication {
       case .ghostty:
-        let target: String
+        // Cached targets are no longer pruned every second, so a failed one is identified again.
+        var focusedCached = false
         if let cached = targets[agent.id] {
-          target = cached
-        } else {
-          target = try await ghostty.identify(agent.process)
-          targets[agent.id] = target
+          do {
+            try await ghostty.focus(cached)
+            focusedCached = true
+          } catch { targets.removeValue(forKey: agent.id) }
         }
-        try await ghostty.focus(target)
+        if !focusedCached {
+          let target = try await ghostty.identify(agent.process)
+          targets[agent.id] = target
+          try await ghostty.focus(target)
+        }
       case .cmux:
         guard let executable = cmuxExecutable else { throw CmuxClient.Failure.notRunning }
         let snapshot = try await cmux.snapshot(executable: executable, isFrontmost: cmuxFrontmost)
@@ -199,6 +208,14 @@ final class AppModel: ObservableObject {
     if let agent = agents.first(where: { $0.id == id }) { await focus(agent) }
   }
 
+  /// Opening the list is a direct request for current state, so the gated work runs again.
+  func refreshNow() async {
+    nextDiscovery = .distantPast
+    nextTerminalPoll = .distantPast
+    nextPermissionCheck = .distantPast
+    await refresh()
+  }
+
   private var refreshing = false
   private var ghosttyRunning: Bool {
     NSWorkspace.shared.runningApplications.contains {
@@ -213,22 +230,29 @@ final class AppModel: ObservableObject {
       refreshing = false
       onChange?()
     }
-    await updateNotificationPermission()
     let previousReceipts = receipts
     do {
       let stored = try store.agents()
       var live = stored.filter { $0.process.isAlive }
       for closed in stored where !closed.process.isAlive { try store.remove(closed) }
       let reportedIDs = Set(live.map(\.id))
-      let discovered = await Task.detached(priority: .utility) {
-        AgentDiscovery.nativeAgents()
-      }.value
+      // Scanning every process is the costliest local step, and hooks report most agents anyway.
+      if Date() >= nextDiscovery {
+        discovered = await Task.detached(priority: .utility) {
+          AgentDiscovery.nativeAgents()
+        }.value
+        nextDiscovery = Date().addingTimeInterval(5)
+      } else {
+        discovered = discovered.filter { $0.process.isAlive }
+      }
       live += discovered.filter { !reportedIDs.contains($0.id) }
-      agents = live
+      if live != agents { agents = live }
     } catch { self.error = "Agent status could not be read. \(error.localizedDescription)" }
     let liveIDs = Set(agents.map(\.id))
     targets = targets.filter { liveIDs.contains($0.key) }
-    receipts = receipts.filter { liveIDs.contains($0.key) }
+    if receipts.keys.contains(where: { !liveIDs.contains($0) }) {
+      receipts = receipts.filter { liveIDs.contains($0.key) }
+    }
     bindingRetry = bindingRetry.filter { liveIDs.contains($0.key) }
     for id in Array(processWatchers.keys) where !liveIDs.contains(id) {
       processWatchers.removeValue(forKey: id)?.cancel()
@@ -254,25 +278,37 @@ final class AppModel: ObservableObject {
       watcher.resume()
       processWatchers[agent.id] = watcher
     }
+    // Pane focus only matters for agents that need attention, so each terminal app is queried
+    // when one of its agents does, plus a periodic check that keeps the connection status current.
+    let attentive = agents.filter { needsAttention($0) }
+    // Permission can change in System Settings, so re-read it when it matters rather than always.
+    if Date() >= nextPermissionCheck || (!notificationsEnabled && !attentive.isEmpty) {
+      nextPermissionCheck = Date().addingTimeInterval(30)
+      await updateNotificationPermission()
+    }
+    let terminalPollDue = Date() >= nextTerminalPoll
+    if terminalPollDue { nextTerminalPoll = Date().addingTimeInterval(30) }
     var focusedID: String?
     if ghosttyAuthorized, ghosttyRunning {
-      do {
-        let snapshot = try await ghostty.snapshot(isRunning: true)
-        ghosttyConnected = true
-        if error?.hasPrefix("Agent Watcher could not control Ghostty") == true { error = nil }
-        focusedID = snapshot.focusedID
-        targets = targets.filter { snapshot.terminalIDs.contains($0.value) }
-        for agent in agents where agent.terminalApplication == .ghostty && targets[agent.id] == nil
-        {
-          guard Date() >= (bindingRetry[agent.id] ?? .distantPast) else { continue }
-          bindingRetry[agent.id] = Date().addingTimeInterval(15)
-          do { targets[agent.id] = try await ghostty.identify(agent.process) } catch {
-            self.error = error.localizedDescription
+      if terminalPollDue || attentive.contains(where: { $0.terminalApplication == .ghostty }) {
+        do {
+          let snapshot = try await ghostty.snapshot(isRunning: true)
+          ghosttyConnected = true
+          if error?.hasPrefix("Agent Watcher could not control Ghostty") == true { error = nil }
+          focusedID = snapshot.focusedID
+          targets = targets.filter { snapshot.terminalIDs.contains($0.value) }
+          for agent in attentive
+          where agent.terminalApplication == .ghostty && targets[agent.id] == nil {
+            guard Date() >= (bindingRetry[agent.id] ?? .distantPast) else { continue }
+            bindingRetry[agent.id] = Date().addingTimeInterval(15)
+            do { targets[agent.id] = try await ghostty.identify(agent.process) } catch {
+              self.error = error.localizedDescription
+            }
           }
+        } catch {
+          ghosttyConnected = false
+          self.error = error.localizedDescription
         }
-      } catch {
-        ghosttyConnected = false
-        self.error = error.localizedDescription
       }
     } else {
       ghosttyConnected = false
@@ -280,13 +316,16 @@ final class AppModel: ObservableObject {
     var cmuxSnapshot: CmuxSnapshot?
     var pendingNotification = false
     if cmuxAuthorized, let executable = cmuxExecutable {
-      do {
-        // Check app focus after the CLI read so switching apps during it cannot acknowledge a response.
-        cmuxSnapshot = try await cmux.snapshot(executable: executable, isFrontmost: true)
-        cmuxConnected = true
-      } catch {
-        cmuxConnected = false
-        self.error = error.localizedDescription
+      if terminalPollDue || attentive.contains(where: { $0.terminalApplication == .cmux }) {
+        do {
+          // Check app focus after the CLI read so switching apps during it
+          // cannot acknowledge a response.
+          cmuxSnapshot = try await cmux.snapshot(executable: executable, isFrontmost: true)
+          cmuxConnected = true
+        } catch {
+          cmuxConnected = false
+          self.error = error.localizedDescription
+        }
       }
     } else {
       cmuxConnected = false

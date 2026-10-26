@@ -221,6 +221,7 @@ Claude Code and Codex report lifecycle events through the native hook executable
 Pi reports through its TypeScript extension using the same local protocol.
 Process identity includes the process ID and start time, and registration verifies its terminal app ancestry and terminal device.
 The app watches process exits and reconciles the list every second.
+It scans for CLIs started before their first hook event every five seconds, and asks Ghostty or cmux about panes only when an agent needs your attention, when it checks the connection every thirty seconds, or when you open the list.
 It can discover native Claude Code and Codex processes before their first hook event.
 Concurrent hook updates use file locks and atomic replacement.
 Monitoring failures do not block agent tools or add anything to the model's context.
