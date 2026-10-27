@@ -267,3 +267,44 @@ private func event(
   #expect(agent.blockers.count == 1)
   #expect(agent.attentionToken == attention)
 }
+
+@Test func questionsShowTheirTextSeparatelyFromApprovals() throws {
+  let ask = Data(
+    #"{"session_id":"session","cwd":"/src","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"ask-1","tool_input":{"questions":[{"question":"Which database should I use?","header":"Database","options":[{"label":"Postgres"},{"label":"SQLite"}],"multiSelect":false},{"question":"Add migrations?","header":"Migrations","options":[]}]}}"#
+      .utf8)
+  let permission = Data(
+    #"{"session_id":"session","cwd":"/src","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database should I use?","header":"Database","options":[{"label":"Postgres"},{"label":"SQLite"}],"multiSelect":false},{"question":"Add migrations?","header":"Migrations","options":[]}]}}"#
+      .utf8)
+  let answered = Data(
+    #"{"session_id":"session","cwd":"/src","hook_event_name":"PostToolUse","tool_name":"AskUserQuestion","tool_use_id":"ask-1","tool_input":{"questions":[{"question":"Which database should I use?","header":"Database","options":[{"label":"Postgres"},{"label":"SQLite"}],"multiSelect":false},{"question":"Add migrations?","header":"Migrations","options":[]}]}}"#
+      .utf8)
+  var agent = Agent(process: process(), provider: .claude, sessionID: "session", cwd: "/src")
+  agent.apply(event(.prompt))
+  agent.apply(event(.approval, at: 101, id: "bash", key: "bash"))
+  #expect(agent.question == nil)
+  var start = try #require(try HookPayload.parse(ask, provider: .claude)).0
+  start.timestamp = 102
+  agent.apply(start)
+  #expect(agent.question == "Which database should I use? (+1 more)")
+  #expect(agent.activity == "Waiting for your answer")
+  var approval = try #require(try HookPayload.parse(permission, provider: .claude)).0
+  approval.timestamp = 103
+  agent.apply(approval)
+  #expect(agent.blockers.count == 2)
+  #expect(agent.question == "Which database should I use? (+1 more)")
+  var end = try #require(try HookPayload.parse(answered, provider: .claude)).0
+  end.timestamp = 104
+  agent.apply(end)
+  #expect(agent.question == nil)
+  #expect(agent.blockers.count == 1)
+
+  let codex = Data(
+    #"{"session_id":"s","cwd":"/src","hook_event_name":"PreToolUse","tool_name":"request_user_input","tool_use_id":"c","tool_input":{"questions":[{"id":"q","header":"Scope","question":"Should I update the tests too?","options":[]}]}}"#
+      .utf8)
+  #expect(try #require(try HookPayload.parse(codex, provider: .codex)).0.question
+    == "Should I update the tests too?")
+  let pi = Data(
+    #"{"session_id":"s","cwd":"/src","hook_event_name":"PreToolUse","tool_name":"ask_user","tool_use_id":"p","tool_input":{"question":"Ship it?"}}"#
+      .utf8)
+  #expect(try #require(try HookPayload.parse(pi, provider: .pi)).0.question == "Ship it?")
+}

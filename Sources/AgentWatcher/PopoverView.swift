@@ -58,7 +58,9 @@ struct PopoverView: View {
         }
         .frame(
           height: min(
-            CGFloat(model.agents.count) * 100 + (idleAgents.isEmpty ? 0 : 32) + 16, 540))
+            CGFloat(model.agents.count) * 100
+              + CGFloat(model.agents.filter { $0.question != nil }.count) * 36
+              + (idleAgents.isEmpty ? 0 : 32) + 16, 540))
       }
       if let error = model.error {
         Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
@@ -209,6 +211,13 @@ private struct AgentRow: View {
           Image(systemName: "arrow.up.forward").font(.caption2).foregroundStyle(.tertiary)
         }
         Text(agent.task.isEmpty ? "No prompt yet" : agent.task).lineLimit(1).truncationMode(.tail)
+        if let question = agent.question {
+          Label(
+            question.isEmpty ? "The agent asked you a question" : question,
+            systemImage: "questionmark.bubble"
+          )
+          .font(.callout).foregroundStyle(.orange).lineLimit(2).truncationMode(.tail)
+        }
         Text("\(agent.terminalApplication.title) · \(agent.activity)").font(.caption)
           .foregroundStyle(.secondary).lineLimit(1).truncationMode(
             .middle)
@@ -222,15 +231,17 @@ private struct AgentRow: View {
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help(agent.cwd + "\n" + agent.task + "\n" + agent.activity)
+    .help([agent.cwd, agent.task, agent.question ?? "", agent.activity].filter { !$0.isEmpty }
+      .joined(separator: "\n"))
     .accessibilityLabel(
-      "\(agent.provider.title), \(agent.terminalApplication.title), \(agent.project), \(status), \(agent.task), \(agent.activity)"
+      "\(agent.provider.title), \(agent.terminalApplication.title), \(agent.project), \(status), \(agent.task), \(agent.question.map { "Question: \($0)" } ?? agent.activity)"
     )
     .accessibilityHint("Focus this agent's \(agent.terminalApplication.title) pane")
   }
 
   private var status: String {
     if agent.sessionID.isEmpty { return "Waiting for status" }
+    if agent.question != nil { return "Question" }
     if !agent.blockers.isEmpty { return "Needs input" }
     if unread { return agent.failed ? "Failed" : "Finished" }
     return agent.working ? "Working" : "Idle"

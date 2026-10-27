@@ -122,7 +122,8 @@ When you exit a CLI or close its pane, its entry disappears.
 | Status | Meaning |
 | --- | --- |
 | **Working** | The agent is handling a request or running tools. |
-| **Needs input** | An approval or question needs your response. |
+| **Question** | The agent asked you a question. The entry shows the question text. |
+| **Needs input** | An approval or other prompt needs your response. |
 | **Finished** | A completed response has not been viewed in its pane. |
 | **Failed** | The CLI reported a failed response that has not been viewed. |
 | **Idle** | The CLI is open and waiting for your next message. |

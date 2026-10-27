@@ -508,12 +508,19 @@ final class AppModel: ObservableObject {
 
   private func notify(_ agent: Agent) {
     let content = UNMutableNotificationContent()
+    let question = agent.question
     let reason =
-      agent.blockers.isEmpty
-      ? (agent.failed ? "response failed" : "finished") : "needs your attention"
+      question != nil
+      ? "asked a question"
+      : agent.blockers.isEmpty
+        ? (agent.failed ? "response failed" : "finished") : "needs your attention"
     content.title = "\(agent.provider.title) \(reason)"
     content.subtitle = agent.project
-    content.body = agent.task.isEmpty ? agent.activity : agent.task
+    if let question, !question.isEmpty {
+      content.body = question
+    } else {
+      content.body = agent.task.isEmpty ? agent.activity : agent.task
+    }
     content.sound = .default
     content.userInfo = ["agentID": agent.id]
     content.threadIdentifier = agent.id
